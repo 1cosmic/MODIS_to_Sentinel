@@ -88,6 +88,8 @@ def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, 
     for combo in tqdm(list(itertools.product(*values)), desc="Training set of models..."):
         params = dict(zip(keys, combo))
         mm = params['mask_mode']
+        lm = params['layer_mode']
+        lt = params['layer_type']
         rr = params['r']
         pp = params['percent']
         rz = params['resize']
@@ -101,6 +103,8 @@ def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, 
 
         z_x, z_y, _, _ = generate_dataset(signs_path, labels_path,
             mask_mode=mm,
+            layer_mode=lm,
+            layer_type=lt,
             r=rr,
             percent=pp,
             resize=rz,
@@ -118,6 +122,7 @@ def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, 
         # Store results as flat dict
         result = {
             'mask_mode': mm,
+            'layer_mode': lm,
             'r': rr,
             'percent': pp,
             'homogen_percent': hp,

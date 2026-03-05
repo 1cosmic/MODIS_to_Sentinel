@@ -5,7 +5,6 @@ import gc
 import os
 import numpy as np
 from scipy.ndimage import maximum_filter, minimum_filter, uniform_filter, sobel
-from skimage.transform import resize
 from osgeo import gdal
 
 from utils import init, load_tif, cut_tif_by, save_tif, DEFAULT_PATH, GEO_DATA
@@ -80,28 +79,19 @@ def load_resized_data_labels(signs, labels, force=False, resize='by_label', verb
         return [], []
 
 
-def create_texture_layer(signs, out=None, resize_by=None, force=False, verbose=False):
-    r_path = None
-    nir_path = None
-    for path in signs:
-        if '.r.' in path:
-            r_path = path
-        elif '.n.' in path:
-            nir_path = path
-    if r_path is None or nir_path is None:
-        Exception("Please, check what in sings_path are exists: r & nir tiles.")
-
+def create_texture_layer(r, nir, out=None, resize_by=None, force=False, order=None, verbose=False):
     if out is None:
-        out = DEFAULT_PATH['processing'] + 'homogeneous_layer.tif'
+        suffix = f'{order}_' if order is not None else ''
+        out = DEFAULT_PATH['processing'] + f'texture_{suffix}' + os.path.basename(r)
 
     res = None
     if os.path.exists(out) and not force:
-        print("Finded gomogeneous layer. Load it.")
+        print("Finded texture layer. Load it.")
         res = load_tif(out, only_first=True, verbose=verbose)
 
     else:
-        r_obj = load_tif(r_path, only_first=True, verbose=verbose)
-        nir_obj = load_tif(nir_path, only_first=True, verbose=verbose)
+        r_obj = load_tif(r, only_first=True, verbose=verbose)
+        nir_obj = load_tif(nir, only_first=True, verbose=verbose)
         print("Retyping...")
         r = r_obj['array'].astype(np.float32)
         nir = nir_obj['array'].astype(np.float32)
@@ -162,10 +152,12 @@ def create_texture_layer(signs, out=None, resize_by=None, force=False, verbose=F
     return res
 
 
-def create_homogeneous_layer(sentinel_red, sentinel_nir, modis_label, resize='by_label', force=False, verbose=True):
+def create_homogeneous_layer(sentinel_red, sentinel_nir, modis_label, resize='by_label', force=False, order=None, verbose=True):
 
-    modis_path = os.path.basename(modis_label['path'])
-    out = DEFAULT_PATH['resized_layers'] + 'px_of_std_' + modis_path
+    # modis_path = os.path.basename(modis_label['path'])
+    sentinel_red_path = os.path.basename(sentinel_red)
+    suffix = f'{order}_' if order is not None else ''
+    out = DEFAULT_PATH['resized_layers'] + f'homogeneous_{suffix}{sentinel_red_path}'
 
     if verbose:
         print("\nStart of create the homogeneous layer by STD...")
@@ -197,7 +189,7 @@ def create_homogeneous_layer(sentinel_red, sentinel_nir, modis_label, resize='by
     idx = np.arange(l.size, dtype=np.uint32)
 
     if verbose:
-        print("convert 230m idx-layer to 10m, grouped like 230m")
+        print("Convert 230m idx-layer to 10m, grouped like 230m")
 
     modis_label['array'] = idx.reshape(l.shape)
     save_tif(modis_label, out, dtype=gdal.GDT_UInt32, verbose=verbose)
@@ -378,80 +370,66 @@ def stack_and_zip(signs: list, labels: list, mask: np.ndarray, verbose=True):
     if verbose:
         print("Zipping dataset by mask...")
         print("create tensor by bands")
-    tensor = {}
-    ndvi = None
-    sawi = None
-    r_band = None
-    n_band = None
-    # s_band = None
-    # w_band = None
-    for d in signs:
-        band_name = d['path'].replace('..', '').split('.')[1]
-        layer = d['array']
-        if band_name in tensor.keys():
-            tensor[band_name] = np.dstack((tensor[band_name], layer))
-        else:
-            tensor[band_name] = layer
-        # Parse bands for NDVI and SAWI
-        if band_name == 'r':
-            r_band = layer.astype(np.float32)
-        elif band_name == 'n':
-            n_band = layer.astype(np.float32)
-        elif band_name == 's':
-            s_band = layer.astype(np.float32)
-        elif band_name == 'w':
-            w_band = layer.astype(np.float32)
-    # # Calculate NDVI if possible
-    # if r_band is not None and n_band is not None:
-    #     ndvi = (n_band - r_band) / (n_band + r_band + 1e-6)
-    #     tensor['ndvi'] = ndvi
-    # # Calculate SAWI if possible
-    # if s_band is not None and w_band is not None:
-    #     sawi = (s_band - w_band) / (s_band + w_band + 1e-6)
-    #     tensor['sawi'] = sawi
 
-    zip_signs = np.dstack([tensor[band] for band in tensor.keys()])   # shape (n x 4)
-    zip_signs = np.squeeze(zip_signs)
+
+    zip_signs = [s['array'] for s in signs]
+    zip_signs = np.moveaxis(np.array(zip_signs), 0, -1)
+
     zip_labels = [l['array'] for l in labels]
-    zip_labels = np.squeeze(np.array(zip_labels))
+    zip_labels = np.moveaxis(np.array(zip_labels), 0, -1)
+
+    print(f"mask:", mask.shape)
 
     zip_signs = zip_signs[mask]
-    zip_labels = zip_labels[mask]
+    zip_labels = zip_labels[mask].reshape(-1)
 
     if verbose:
         print(f"Size dataset before -> after zip by mask:")
-        print("signs:", signs[0]['array'].size * len(signs), '->', zip_signs.size, '| bands:', len(tensor.keys()), '| shape:', zip_signs.shape)
-        print("labels:", labels[0]['array'].size * len(labels), '->', zip_labels.size, '| shape:', zip_labels.shape)
+        print(f"shape of signs:", zip_signs.shape)
+        print(f"shape of labels:", zip_labels.shape)
     
     return zip_signs, zip_labels
 
 
 # Iteration of dataset for training with transform data to tensor.
-def generate_dataset(signs, labels, percent, force=False, mask_mode='random', save_mask=False, r=1, homogen_percent=0.01, stratify=False, resize='by_label', verbose=True):
+def generate_dataset(signs, labels, percent, force=False, mask_mode='random', layer_mode=None, layer_type='static', save_mask=False, r=1, homogen_percent=0.01, stratify=False, resize='by_label', verbose=True):
 
     resized_signs, resized_labels = load_resized_data_labels(signs['path'].to_list(), 
                                                              labels['path'].to_list(), 
                                                              resize=resize, force=force, verbose=verbose)
 
-    if mask_mode == 'homogeneous':
-        # good provide data
-        sentinel_red = signs.query("band == 'r'")['path'].to_list()[0]
-        sentinel_nir = signs.query("band == 'n'")['path'].to_list()[0]
-        modis_label = resized_labels[0]
-        if not sentinel_red or not sentinel_nir:
-            Exception("You need homogeneous layer, but don't provide red & nir channel")
-        homogeneous = create_homogeneous_layer(sentinel_red, sentinel_nir, modis_label, resize=resize, force=force, verbose=verbose)
+    red_layers = signs.query("band == 'r'")['path'].to_list()
+    nir_layers = signs.query("band == 'n'")['path'].to_list()
+    modis_label = resized_labels[0]
 
-    elif mask_mode == 'texture':
-        # bad provide data
+    if len(red_layers) != len(nir_layers):
+        Exception("Count of red != nir")
+
+    layer_count = 1
+    if layer_type == 'dynamic':
+        layer_count = len(red_layers)
+        print(f"Dynamic layer type. Create {layer_count} layers for each pair of red and nir.")
+
+    if 'homogeneous' in [mask_mode, layer_mode]:
+        # homogen_layer = []
+        for i in range(layer_count):
+            homogeneous = create_homogeneous_layer(red_layers[i], nir_layers[i], modis_label, resize=resize, force=force, order=i, verbose=verbose)
+            resized_signs.append(homogeneous)
+
+    elif 'texture' in [mask_mode, layer_mode]:
+        # homogen_layer = []
         resize_by = resized_labels[0]['path'] if resize == 'by_label' else None
-        homogeneous = create_texture_layer(resized_signs, out=None, resize_by=resize_by, force=True, verbose=verbose)
-    else:
-        homogeneous = None
+        for i in range(layer_count):
+            texture = create_texture_layer(red_layers[i], nir_layers[i], out=None, resize_by=resize_by, force=force, order=i, verbose=verbose)
+            resized_signs.append(texture)
 
     mask = create_mask(resized_labels[0], resized_signs[0], mode=mask_mode, 
                        percent=percent, stratify=stratify, 
-                       r=r, homogen_layer = homogeneous, save_mask=save_mask, homogen_percent=homogen_percent, verbose=verbose)
-    zip_signs, zip_labels = stack_and_zip(resized_signs, resized_labels, mask, verbose=verbose)
+                       r=r, save_mask=save_mask, homogen_percent=homogen_percent, verbose=verbose)
+    
+    if layer_mode in ['texture', 'homogeneous']: 
+        print(f"Append to stack in signs: {layer_mode}")
+        # resized_signs.append(homogen_layer)
 
+    zip_signs, zip_labels = stack_and_zip(resized_signs, resized_labels, mask, verbose=verbose)
     return zip_signs, zip_labels, resized_signs, resized_labels

@@ -47,8 +47,8 @@ def cut_etalons(predicted, etalons, force=False):
     return cropped_etalons
 
 
-def validate_how_tif(predicted_path:str, etalons_path:str, force=False):
-    predicted = load_tif(predicted_path, only_first=True)
+def validate_how_tif(predicted_path:str, etalons_path:str, force=False, verbose=False):
+    predicted = load_tif(predicted_path, only_first=True, verbose=False)
     etalons = cut_etalons(predicted, etalons_path, force=force)
 
     if len(etalons) < 1:

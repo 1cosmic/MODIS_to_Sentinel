@@ -32,7 +32,7 @@ def rel_path(path):
     return os.path.join(MODULE_DIR, path)
 
 DEFAULT_PATH = {
-    'images': rel_path('../data/input/images_10m/Sentinel_Samara/'),
+    'images': rel_path('../data/input/images_10m/Sentinel/'),
     'labels': rel_path('../data/input/labels_230m/'),
     'etalons': rel_path('../data/input/etalons/'),
     'processing': rel_path('../data/processing/'),

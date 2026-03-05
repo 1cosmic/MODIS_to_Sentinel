@@ -4,12 +4,42 @@ import numpy as np
 from tqdm import tqdm
 import time
 
-from utils import save_tif, color_palette, DEFAULT_PATH
+
+from utils import save_tif, color_palette, DEFAULT_PATH, load_tif
+from prepare_ds import create_homogeneous_layer, create_texture_layer
 
 
-def create_map(images: dict, model, name: str, count_chunks=2, with_time=True):
+def create_map(signs, model, name: str, count_chunks=2, layer_mode=None, layer_type='static'):
+
+    if model is str:
+        model = joblib.load(model)
+    
+    signs = signs.sort_values("month").sort_values("band")
+    red = signs.query("band == 'b4' or band == 'r'")['path'].to_list()
+    nir = signs.query("band == 'b8' or band == 'n'")['path'].to_list()
+    signs = signs['path'].to_list()
+
+    textures = []
+    if layer_mode == 'texture':
+        layer_count = 1
+        if layer_type == 'dynamic':
+            layer_count = len(red)
+            print(f"Dynamic layer type. Create {layer_count} texture layers.")
+    
+        for i in range(layer_count):
+            textures.append(create_texture_layer(red[i], nir[i], out=None, order=i))
+
+    else:
+        Exception("Layer mode can be only 'texture'")
+    
+    loaded_signs = []
+    for sig in signs:
+        loaded_signs.append(load_tif(sig, only_first=True))
+    loaded_signs.extend(textures)
+
     # model = joblib.load(model)
-    X = np.dstack([img['array'] for img in images])
+    X = np.stack([sig['array'] for sig in loaded_signs])
+    X = np.moveaxis(X, 0, -1)
 
     s_x = X.shape[0]
     s_y = X.shape[1]
@@ -38,7 +68,7 @@ def create_map(images: dict, model, name: str, count_chunks=2, with_time=True):
     print("Map is done.")
     elapsed_time = round((time.time() - start_time) / 60, 1)
     
-    out_img = images[0]
+    out_img = loaded_signs[0]
     out_img['array'] = predict_map
     save_tif(out_img, name, color_palette=color_palette)
 

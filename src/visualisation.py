@@ -58,6 +58,7 @@ def spyder_eye(datasets, ml_sets):
 
         percent = ds.get('percent', '')
         mask_mode = ds.get('mask_mode', '')
+        layer_mode = ds.get('layer_mode', '')
         rows = ml_sets[i].get('r', '')
         # resize_val = ml_sets[i].get('resize', '')
         im = axes[0, i].imshow(heatmap, cmap="Blues")
@@ -88,8 +89,7 @@ def spyder_eye(datasets, ml_sets):
         else:
             f1_score_str = ""
 
-        t = ml_sets[i]['train_time']
-        title = f"{t} min, f1: {f1_score_str}% of {mask_mode},\nsize: {percent*100:.02f}% | std: {hp:.02f} or r={radius}"
+        title = f"f1: {f1_score_str}%, mask: {mask_mode}, layer: {layer_mode},\nsize: {percent*100:.02f}% | std: {hp:.02f} or r={radius}"
         axes[0, i].set_title(title)
         plt.colorbar(im, ax=axes[0, i])
 
