@@ -1,6 +1,7 @@
 # Module 2: create map by predict on weights
 import joblib
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 import time
 
@@ -14,24 +15,26 @@ def create_map(signs, model, name: str, count_chunks=2, layer_mode=None, layer_t
     if model is str:
         model = joblib.load(model)
     
-    signs = signs.sort_values("month").sort_values("band")
-    red = signs.query("band == 'b4' or band == 'r'")['path'].to_list()
-    nir = signs.query("band == 'b8' or band == 'n'")['path'].to_list()
-    signs = signs['path'].to_list()
-
     textures = []
-    if layer_mode == 'texture':
-        layer_count = 1
-        if layer_type == 'dynamic':
-            layer_count = len(red)
-            print(f"Dynamic layer type. Create {layer_count} texture layers.")
-    
-        for i in range(layer_count):
-            textures.append(create_texture_layer(red[i], nir[i], out=None, order=i))
+    if isinstance(signs, pd.DataFrame):
+        signs = signs.sort_values("band").sort_values("month")
+        red = signs.query("band == 'b4' or band == 'r'")['path'].to_list()
+        nir = signs.query("band == 'b8' or band == 'n'")['path'].to_list()
+        signs = signs['path'].to_list()
 
-    else:
-        Exception("Layer mode can be only 'texture'")
+        if layer_mode == 'texture':
+            layer_count = 1
+            if layer_type == 'dynamic':
+                layer_count = len(red)
+                print(f"Dynamic layer type. Create {layer_count} texture layers.")
+        
+            for i in range(layer_count):
+                textures.append(create_texture_layer(red[i], nir[i], out=None, order=i))
+
+        else:
+            Exception("Layer mode can be only 'texture'")
     
+
     loaded_signs = []
     for sig in signs:
         loaded_signs.append(load_tif(sig, only_first=True))

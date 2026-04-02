@@ -70,7 +70,7 @@ def parse_tifs_from(path:str, typeof:str, force=False, verbose=True):
         def template_label(struct, fullpath):
             return {
                     'type': typeof,
-                    'reg': 64,
+                    'name': struct[0],
                     'year': int(struct[2]),
                     'path': fullpath,
                 }

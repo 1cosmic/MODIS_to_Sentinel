@@ -106,10 +106,10 @@ def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, 
             layer_mode=lm,
             layer_type=lt,
             r=rr,
-            percent=pp,
+            count=pp,
             resize=rz,
             stratify=st,
-            homogen_percent=hp,
+            feature=hp,
             verbose=verbose,
             force=force)
         _, count_classes = np.unique(z_y, return_counts=True)

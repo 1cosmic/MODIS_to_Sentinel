@@ -8,8 +8,8 @@ from scipy.ndimage import maximum_filter, minimum_filter, uniform_filter, sobel
 from osgeo import gdal
 
 from utils import init, load_tif, cut_tif_by, save_tif, DEFAULT_PATH, GEO_DATA
+from visualisation import draw_median_sign, draw_hist_cosine_dists
 
-import itertools
 from tqdm import tqdm
 
 init()
@@ -51,14 +51,23 @@ def load_resized_data_labels(signs, labels, force=False, resize='by_label', verb
         sources = labels
         by = load_tif(signs[0], only_first=True, verbose=verbose)
         resize_path = 'resized_labels'
-    else:
-        raise ValueError("resize can be only [by_sign, by_label]")
 
+    elif resize == 'all_signs':
+        if verbose:
+            print("\nResizing labels by 1st image:")
+        sources = signs
+        by = load_tif(signs[0], only_first=True, verbose=verbose)
+        resize_path = 'resized_labels'
+    else:
+        raise ValueError("resize can be only [by_sign, by_label, all_signs]")
+
+    i = 0
     resized = []
     switch_mode = 'bilinear' if resize == 'by_sign' else 'nearest'
     for src in sources:
         name = os.path.basename(src)
-        out = DEFAULT_PATH[resize_path] + name
+        out = DEFAULT_PATH[resize_path] + f'{i}_' + name
+        i += 1
         if not os.path.exists(out) or force:
             cut_tif_by(src, by, out, resize=px_size, mode=switch_mode, verbose=verbose)
         else:
@@ -70,13 +79,113 @@ def load_resized_data_labels(signs, labels, force=False, resize='by_label', verb
 
     if verbose:
         print("\nData and labels prepared.\n")
-    if resize == 'by_label':
+    if resize in ['by_label', 'all_signs']:
         return resized, cropped_labels
     elif resize == 'by_sign':
         loaded_signs = [load_tif(s, verbose=verbose, only_first=True) for s in signs]
         return loaded_signs, resized
     else:
         return [], []
+
+
+def mask_cosine_dist_to_median_sign(signs, label, take_q, r=20, median_mode='similar', draw=True, verbose=True):
+    if median_mode not in ['similar', 'not_similar']:
+        raise ValueError("median_mode can be only [similar, not_similar]")
+
+    x = np.array([s['array'] for s in signs])
+    x = np.moveaxis(x, 0, -1)
+    label = label['array']
+    classes = np.unique(label[label > 0])
+
+    r = 20
+
+    print("Calculating secure area for selecting...")
+    min_in_neighborhood = minimum_filter(label, size=(r*2 + 1))
+    max_in_neighborhood = maximum_filter(label, size=(r*2 + 1))
+    secure = (min_in_neighborhood == max_in_neighborhood)
+
+    t_0 = time()
+
+    median_signs = []
+    bins_median_signs = []
+    result_mask = np.ones_like(label, dtype=bool)
+    result_mask[~secure] = 0
+
+    print("Calculating median sign for each class...")
+    # for cl in classes[:4]:
+    for cl in classes:
+        to_class = (label == cl) & result_mask
+        print(f"Statistic for class: {cl}")
+ 
+        if median_mode == 'not_similar':
+            y = np.median(x[to_class], axis=0)
+            print(f"median of sign:\n{y}")
+
+            norm_x = np.linalg.norm(x[result_mask], axis=1)
+            norm_y = np.linalg.norm(y)
+            scalar_x_y = x[result_mask].dot(y)
+            print(f"shapes: x: {norm_x.shape}, y: {norm_y.shape}, scalar: {scalar_x_y.shape}")
+
+            cosine_dist = 1 - scalar_x_y / (norm_x * norm_y)
+            to_class = (label == cl)[result_mask]
+            dist_max = np.quantile(cosine_dist[to_class], take_q)
+            print(f"max of dist to class == {cl}: {dist_max}")
+
+            idx = np.where(result_mask)
+            another = (label != cl)[result_mask] & (cosine_dist < dist_max)
+
+            mask_remove = (
+                idx[0][another],
+                idx[1][another],
+            )
+
+            print(
+                f"removed signatures for [label > {cl}]: {result_mask[mask_remove].size}"
+            )
+            result_mask[mask_remove] = 0
+
+        elif median_mode == 'similar':
+            y = np.median(x[to_class], axis=0)
+            print(f"median of sign:\n{y}")
+
+            norm_x = np.linalg.norm(x[to_class], axis=1)
+            norm_y = np.linalg.norm(y)
+            scalar_x_y = x[to_class].dot(y)
+            print(f"shapes: x: {norm_x.shape}, y: {norm_y.shape}, scalar: {scalar_x_y.shape}")
+
+            cosine_dist = 1 - scalar_x_y / (norm_x * norm_y)
+            dist_max = np.quantile(cosine_dist, take_q)
+            print(f"max of dist to class == {cl}: {dist_max}")
+
+            idx = np.where(to_class)
+            not_similar = (cosine_dist > dist_max)
+
+            mask_remove = (
+                idx[0][not_similar],
+                idx[1][not_similar],
+            )
+
+            print(
+                f"removed signatures for [label == {cl}]: {result_mask[mask_remove].size}"
+            )
+            result_mask[mask_remove] = 0
+
+
+            if draw:
+                median_signs.append(y)
+                print("calcs of cosine dists for draw...")
+                counts, bins = np.histogram(cosine_dist, bins=np.arange(0, 1.1, 0.025))
+                bins_median_signs.append((counts, bins))
+
+        else:
+            raise Exception(f"Unknown median mode: {median_mode}")
+
+    if draw:
+        draw_median_sign(median_signs)
+        # draw_hist_cosine_dists(bins_median_signs)
+
+    print(f"Cosine distance to median sign is calculated. Time: {time() - t_0:0.3f}s")
+    return result_mask
 
 
 def create_texture_layer(r, nir, out=None, resize_by=None, force=False, order=None, verbose=False):
@@ -228,7 +337,7 @@ def create_homogeneous_layer(sentinel_red, sentinel_nir, modis_label, resize='by
     save_tif(modis_label, out, dtype=gdal.GDT_Float32, verbose=verbose)
     
     # If MODIS px to Sentinel, resize grouped std to it.
-    if resize == 'by_sign':
+    if resize in ['by_sign', 'all_signs']:
         cut_tif_by(out, sentinel_nir, out, resize=10, mode='bilinear', verbose=verbose)
         modis_label = load_tif(out, only_first=True, verbose=verbose)
         print("Resizing done.")
@@ -238,25 +347,17 @@ def create_homogeneous_layer(sentinel_red, sentinel_nir, modis_label, resize='by
     return modis_label
 
 
-def create_mask(label: dict, image: dict, percent: float = 0.01, r=1,
+def create_mask(label: list[dict], signs: list[dict], count_signs:int = 5000, r=20,
                 mode:str = 'random', save_mask=False,
-                homogen_layer=None, homogen_percent=0.1, stratify=False, verbose=True) -> np.ndarray:
+                feature_layer=None, feature_percent=0.1, stratify=False, draw=False, verbose=True, median_mode='similar') -> np.ndarray:
 
     if verbose:
         print("Creating mask...")
-    image_array = image['array']
-    label_array = label['array']
+    image_array = signs[0]['array']
+    label_array = label[0]['array']
 
     label_array[image_array <= 0] = 0              # work with ONLY FILLED pixels
     mask = np.zeros_like(label_array, dtype=bool)  # create a mask from the labels
-
-    # percent_by_class = np.bincount(label_array[image_array > 0].ravel()) / label_array[label_array > 0].size
-    # print(percent_by_class)
-
-    # if stratify:
-    #     count_signs = label_array[label_array > 0].size
-    # else:
-    count_signs = int(label_array[label_array > 0].size * percent)
 
     if mode == 'random':
         rows, cols = np.where(label_array > 0)
@@ -264,61 +365,102 @@ def create_mask(label: dict, image: dict, percent: float = 0.01, r=1,
         idx = (rows[idx], cols[idx])
         mask[idx] = True
 
+
+
+    if mode == 'unique':
+        t0 = time()
+        x = np.array([s['array'] for s in signs])
+        x = np.moveaxis(x, 0, -1)
+
+        h, w, c = x.shape
+        pixels = x.reshape(-1, c)
+
+        # Храним хеши и индексы первых вхождений
+        seen = {}
+        idx = np.zeros(len(pixels), dtype=bool)
+
+        for i in tqdm(range(len(pixels)), desc="Hashing"):
+            h = hash(pixels[i].tobytes())
+            if h not in seen:
+                seen[h] = i
+                idx[i] = 1
+        
+        mask = idx.reshape(h, w)
+
+
     elif mode == 'secure':
         min_in_neighborhood = minimum_filter(label_array, size=(r*2 + 1))
         max_in_neighborhood = maximum_filter(label_array, size=(r*2 + 1))
         mask_secure_px = (min_in_neighborhood == max_in_neighborhood) & (label_array > 0)
         idx = np.where(mask_secure_px)
-        count = count_signs if count_signs <= idx[0].size else idx[0].size
-        print("count of value in secure mask: ", count)
+
+        if stratify:
+            count = idx[0].size
+        else:
+            count = count_signs if count_signs < idx[0].size else idx[0].size
+
+        print("count of value in secure mask: ", idx[0].size)
         i = np.random.choice(idx[0].size, size=count, replace=False)
         idx = (idx[0][i], idx[1][i])
         mask[idx] = True
 
-    elif mode in ['texture', 'homogeneous']:
-        if homogen_layer is None:
-            raise Exception("Sorry, you don't provide homogeneous mask.")
-        homogen_layer = homogen_layer['array']
-        if homogen_layer.shape != label_array.shape:
-            raise Exception(f"Homogeneous shape: {homogen_layer.shape} != label: {label_array.shape}")
 
-        homogen_mask = label_array > 0
+    elif mode == 'median':
+        mask = mask_cosine_dist_to_median_sign(signs, label[0], feature_percent, median_mode=median_mode, r=r, draw=draw)
+    
+
+    elif mode in ['texture', 'homogeneous']:
+        if feature_layer is None:
+            raise Exception("Sorry, you don't provide homogeneous mask.")
+        feature_layer = feature_layer['array']
+        if feature_layer.shape != label_array.shape:
+            raise Exception(f"Homogeneous shape: {feature_layer.shape} != label: {label_array.shape}")
 
         if mode == 'texture':
-            mean_homogeneous = np.bincount(label_array[homogen_mask], weights=homogen_layer[homogen_mask])[1:]
-            sums = np.bincount(label_array[homogen_mask])[1:]
-            mean_homogeneous = mean_homogeneous / sums
-
+            classes = np.unique(label_array[label_array > 0])
             homogen_mask = np.zeros_like(label_array, dtype=bool)
-            for cl in range(len(mean_homogeneous)):
-                mean_class = mean_homogeneous[cl]
-                min_mean = mean_class - mean_class * homogen_percent / 2
-                max_mean = mean_class + mean_class * homogen_percent / 2
-                
-                cursor = ((homogen_layer >= min_mean) &
-                        (homogen_layer <= max_mean) & 
-                        (label_array == cl + 1))
+            for cl in classes:
+
+                l_mean = np.quantile(feature_layer[label_array == cl], 0.5 - feature_percent / 2)
+                mean = np.quantile(feature_layer[label_array == cl], 0.5)
+                r_mean = np.quantile(feature_layer[label_array == cl], 0.5 + feature_percent / 2)
+
+                cursor = (((feature_layer >= l_mean)  &
+                           (feature_layer <= r_mean)) & 
+                           (label_array == cl))
                 homogen_mask[cursor] = 1
+
+                print(f"class: {cl}, l_mean, mean, r_mean", l_mean, mean, r_mean)
 
         elif mode == 'homogeneous':
             classes = np.unique(label_array[label_array > 0])
             homogen_mask = np.zeros_like(label_array, dtype=bool)
 
             for cl in classes:
-                true_px = (label_array > 0) & (label_array == cl)
-                q = np.quantile(homogen_layer[true_px], homogen_percent)
-                print(f"q of {cl}: ", q)
-                true_px = (homogen_layer > 0) & (homogen_layer <= q) & true_px
+                true_px = (label_array == cl)
+                q = np.quantile(feature_layer[true_px], feature_percent)
+                q2 = np.quantile(feature_layer[true_px], 1 - feature_percent)
+                q_mean = np.quantile(feature_layer[true_px], 0.5)
+                q_mean_l = np.quantile(feature_layer[true_px], 0.5 - feature_percent / 2)
+                q_mean_r = np.quantile(feature_layer[true_px], 0.5 + feature_percent / 2)
+                print(f"class {cl}: q_left: {q}\tq_right: {q2}\tmean: {q_mean}\tmean_l: {q_mean_l}\tmean_r: {q_mean_r}")
+
+                true_px = (feature_layer > 0) & (feature_layer <= q) & true_px  # MODE 1: take only homogen
+                print("Homogen mode: only homogen")
+                # true_px = ((homogen_layer <= q) | (homogen_layer >= q2)) & true_px    # MODE 2: take homogen & extragen
+                # print("Homogen mode: homogen & extragen")
+                # true_px = ((feature_layer >= q_mean_l) & (feature_layer <= q_mean_r)) & true_px    # MODE 2: take window of mean 
+                # print("Homogen mode: in window around mean")
 
                 idx = np.where(true_px)
-                count = int(idx[0].size * percent)
-                i = np.random.choice(idx[0].size, size=count, replace=False)
+                # count = int(idx[0].size * percent)
+                i = np.random.choice(idx[0].size, size=count_signs, replace=False)
                 idx = (idx[0][i], idx[1][i])
                 homogen_mask[idx] = 1
 
         if not stratify:
             rows, cols = np.where(homogen_mask)
-            count_signs = int(rows.size * percent)
+            # count_signs = int(rows.size * percent)
             i = np.random.choice(rows.size, size=count_signs, replace=False)
             idx = (rows[i], cols[i])
             mask[idx] = 1
@@ -334,7 +476,7 @@ def create_mask(label: dict, image: dict, percent: float = 0.01, r=1,
         if verbose:
             print("Start stratify. Before output:", classes, counts)
         balanced = np.zeros_like(label_array, dtype=bool)
-        min_c = counts.min()
+        min_c = counts.min() if counts.min() < count_signs else count_signs
 
         for c in classes:
             # if c == 6: continue
@@ -349,14 +491,14 @@ def create_mask(label: dict, image: dict, percent: float = 0.01, r=1,
 
     if save_mask:
         output = DEFAULT_PATH['output']
-        name = f'mask_{mode}_r{r}_{percent}'
+        name = f'mask_{mode}_r{r}_{count_signs}'
         if mode == "homogeneous":
-            name = name + f'hp_{homogen_percent}'
+            name = name + f'_hp_{feature_percent}'
         if stratify:
             name = name + '_stratified.tif'
         else:
             name = name + '.tif'
-        out = label.copy()
+        out = label[0].copy()
         out['array'] = mask
         save_tif(out, output + name, with_bg=True, verbose=verbose)
     if verbose:
@@ -392,7 +534,7 @@ def stack_and_zip(signs: list, labels: list, mask: np.ndarray, verbose=True):
 
 
 # Iteration of dataset for training with transform data to tensor.
-def generate_dataset(signs, labels, percent, force=False, mask_mode='random', layer_mode=None, layer_type='static', save_mask=False, r=1, homogen_percent=0.01, stratify=False, resize='by_label', verbose=True):
+def generate_dataset(signs, labels, count, force=False, mask_mode='random', layer_mode=None, layer_type='static', median_mode='similar', save_mask=False, r=20, feature_percent=0.1, stratify=False, resize='by_label', draw=False, verbose=True):
 
     resized_signs, resized_labels = load_resized_data_labels(signs['path'].to_list(), 
                                                              labels['path'].to_list(), 
@@ -410,26 +552,34 @@ def generate_dataset(signs, labels, percent, force=False, mask_mode='random', la
         layer_count = len(red_layers)
         print(f"Dynamic layer type. Create {layer_count} layers for each pair of red and nir.")
 
-    if 'homogeneous' in [mask_mode, layer_mode]:
-        # homogen_layer = []
+    feature = []
+    if 'homogeneous' == layer_mode:
         for i in range(layer_count):
             homogeneous = create_homogeneous_layer(red_layers[i], nir_layers[i], modis_label, resize=resize, force=force, order=i, verbose=verbose)
-            resized_signs.append(homogeneous)
+            feature.append(homogeneous)
 
-    elif 'texture' in [mask_mode, layer_mode]:
-        # homogen_layer = []
+    elif 'texture' == layer_mode:
         resize_by = resized_labels[0]['path'] if resize == 'by_label' else None
         for i in range(layer_count):
             texture = create_texture_layer(red_layers[i], nir_layers[i], out=None, resize_by=resize_by, force=force, order=i, verbose=verbose)
-            resized_signs.append(texture)
+            feature.append(texture)
 
-    mask = create_mask(resized_labels[0], resized_signs[0], mode=mask_mode, 
-                       percent=percent, stratify=stratify, 
-                       r=r, save_mask=save_mask, homogen_percent=homogen_percent, verbose=verbose)
-    
+
+    feature_layer = None
+    if 'homogeneous' == mask_mode:
+        feature_layer = create_homogeneous_layer(red_layers[0], nir_layers[0], modis_label, resize=resize, force=force, verbose=verbose)
+
+    elif 'texture' == mask_mode:
+        resize_by = resized_labels[0]['path'] if resize == 'by_label' else None
+        feature_layer = create_texture_layer(red_layers[0], nir_layers[0], out=None, resize_by=resize_by, force=force, order=0, verbose=verbose)
+
+    mask = create_mask(resized_labels, resized_signs, mode=mask_mode, 
+                       count_signs=count, stratify=stratify, feature_layer=feature_layer, median_mode=median_mode,
+                       r=r, save_mask=save_mask, feature_percent=feature_percent, draw=draw, verbose=verbose)
+
     if layer_mode in ['texture', 'homogeneous']: 
         print(f"Append to stack in signs: {layer_mode}")
-        # resized_signs.append(homogen_layer)
+        resized_signs.extend(feature)
 
     zip_signs, zip_labels = stack_and_zip(resized_signs, resized_labels, mask, verbose=verbose)
     return zip_signs, zip_labels, resized_signs, resized_labels
