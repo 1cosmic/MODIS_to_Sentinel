@@ -68,7 +68,7 @@ def downgrade_classes(src, out, reassign=None, force=False, verbose=True):
         for class_val, rgb in color_palette.items():
             colors.SetColorEntry(class_val, rgb)
         dst_ds.GetRasterBand(1).SetRasterColorTable(colors)
-        dst_ds.GetRasterBand(1).SetRasterColorInterpretation(gdal.GCI_PaletteIndex)  
+        # dst_ds.GetRasterBand(1).SetRasterColorInterpretation(gdal.GCI_PaletteIndex)  
         dst_ds.FlushCache()
         src_ds = dst_ds = None
     

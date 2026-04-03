@@ -189,7 +189,7 @@ def cut_tif_by(src, by, out, mode='bilinear', resize=10, aligned=False, verbose=
 
 ##############
 # Pipeline steps
-def prepare_and_load_data(signs, labels, out, verbose=False):
+def prepare_and_load_data(signs, labels, out, cache, verbose=False):
     if not signs:
         raise ValueError(f"No sign files found.")
     if not labels:
@@ -200,6 +200,7 @@ def prepare_and_load_data(signs, labels, out, verbose=False):
     prepared_signs = []
     prepared_labels = []
 
+    init_path(out)
     labels = sorted(labels, key=lambda x: os.path.basename(x))
 
     pbar = tqdm(labels, desc="Preparing labels") if verbose else labels
@@ -223,7 +224,7 @@ def prepare_and_load_data(signs, labels, out, verbose=False):
             status = f"Resizing sign: {name}"
             if verbose:
                 pbar.set_description(status)
-            resized_out = out.joinpath(f"{i}_{name}")
+            resized_out = cache.joinpath(f"{i}_{name}")
             s = cut_tif_by(s, prepared_labels[0]['path'], str(resized_out), mode='bilinear', resize=10)
             i += 1
 
@@ -295,7 +296,7 @@ def train_model(X, y, verbose):
     return model
 
 
-def create_map(model, signs, out, template, chunk=100, verbose):
+def create_map(model, signs, out, template, chunk=100, verbose=False):
     msg = f"Creating map with model, outputting to {out}"
     printf(msg, verbose)
     
@@ -307,11 +308,15 @@ def create_map(model, signs, out, template, chunk=100, verbose):
     size_sign = signs.dtype.itemsize * C  # (sign = type * channels)
     per_chunk = int(chunk // size_sign)
 
+    idx = np.where(signs.sum(axis=1) > 0)[0]  # only valid signs
+
     res = np.zeros((H * W,), dtype=np.uint8)
-    for i in tqdm(range(0, signs.shape[0], per_chunk),
-                  desc="Creating map") if verbose else range(0, signs.shape[0], per_chunk):
-        end = min(i + per_chunk, signs.shape[0])
-        res[i:end] = model.predict(signs[i:end])
+    for i in tqdm(range(0, idx.shape[0], per_chunk),
+                  desc="Creating map") if verbose else range(0, idx.shape[0], per_chunk):
+        end = min(i + per_chunk, idx.shape[0])
+        
+        res[idx[i:end]] = model.predict(signs[idx[i:end]])
+
     res = res.reshape(H, W)
     template['array'] = res
     save_tif(template, out, 
@@ -344,9 +349,11 @@ def run_pipeline(
     chunk: int,
     verbose: bool,
     force: bool,
+    ignore_error: bool,
 ):
     years = parse_dates(years)
     processed_out = Path(out).joinpath('processed')
+    cache_out = Path(out).joinpath('cache')
 
     src = parse_files(src, type='signs')
     tiles = src['tile'].unique()
@@ -360,9 +367,12 @@ def run_pipeline(
         validate = True
 
     # For each tile and year create map, validate it with etalon (if provided) and save to output
+    qbar = tqdm(total=len(tiles) * len(years), desc="Processing tiles and years") if verbose else None
     for tile in tiles:
         for year in years:
-            printf(f"Processing tile {tile} for year {year}...", verbose)
+            qbar.set_description(f"Processing tile {tile} for  {year}") if verbose else None
+            qbar.update(1) if verbose else None
+
             curdir = Path(out).joinpath(tile).joinpath(str(year))
             init_path(curdir, verbose=verbose)
             save_out = curdir.joinpath(f"M2C_{tile}_{year}.tif")
@@ -377,33 +387,43 @@ def run_pipeline(
             signs = signs['path'].tolist()
             label = label['path'].tolist()
 
-            # If result map's exist - skip double work, but if need to rewrite - use force
-            if not os.path.exists(save_out) or force:
-                # Prepare & load this data to numpy from source.tif
-                signs, label, template = prepare_and_load_data(signs, label, 
-                                                               out=processed_out.joinpath(tile),  verbose=verbose)
-                X, y = create_dataset(signs, label, sign_per_class=5000, verbose=verbose)
-                m = train_model(X, y, verbose)
-                X, y, label = None, None, None
-                tile_map = create_map(m, signs, save_out, template=template, chunk=chunk, verbose=verbose)
-                signs = None
-                gc.collect()
-            else:
-                printf(f"File {os.path.basename(save_out)} already exists. Skipping tile {tile}", verbose)
-                tile_map = load_tif(save_out, verbose=verbose)
+            try:
+                # If result map's exist - skip double work, but if need to rewrite - use force
+                if not os.path.exists(save_out) or force:
+                    # Prepare & load this data to numpy from source.tif
+                    signs, label, template = prepare_and_load_data(signs, label, 
+                                                                out=processed_out.joinpath(tile),
+                                                                cache=cache_out,
+                                                                verbose=verbose)
+                    X, y = create_dataset(signs, label, sign_per_class=5000, verbose=verbose)
+                    m = train_model(X, y, verbose)
+                    X, y, label = None, None, None
+                    tile_map = create_map(m, signs, save_out, template=template, chunk=chunk, verbose=verbose)
+                    signs = None
+                    gc.collect()
+                else:
+                    printf(f"File {os.path.basename(save_out)} already exists. Skipping tile {tile}", verbose)
+                    tile_map = load_tif(save_out, verbose=verbose)
 
-            # Validate result map with etalon (if provided)
-            if validate:
-                etalon = etalons.query("year == @year")['path'].tolist()
-                name = os.path.basename(etalon[0]).replace(".tif", "")
-                etalon = etalon[0]   # take only 1st etalon in this year
-                etalon = cut_tif_by(etalon, str(save_out), 
-                                    curdir.joinpath(f"etalon_{name}.tif"), 
-                                    mode='nearest', resize=10, aligned=True, verbose=verbose)
-                etalon = load_tif(etalon, verbose=verbose)['array']
-                tile_map = tile_map['array']
-                validate_map(tile_map, etalon,
-                             out=curdir.joinpath(f"valid_report_{name}.txt"), verbose=verbose)
+                # Validate result map with etalon (if provided)
+                if validate:
+                    etalon = etalons.query("year == @year")['path'].tolist()
+                    name = os.path.basename(etalon[0]).replace(".tif", "")
+                    etalon = etalon[0]   # take only 1st etalon in this year
+                    etalon = cut_tif_by(etalon, str(save_out), 
+                                        curdir.joinpath(f"etalon_{name}.tif"), 
+                                        mode='nearest', resize=10, aligned=True, verbose=verbose)
+                    etalon = load_tif(etalon, verbose=verbose)['array']
+                    tile_map = tile_map['array']
+                    validate_map(tile_map, etalon,
+                                    out=curdir.joinpath(f"valid_report_{name}.txt"), verbose=verbose)
+
+            except Exception as e:
+                if ignore_error:
+                    printf(f"Error processing tile {tile} for year {year}: {e}", verbose=verbose)
+                    continue
+                else:
+                    raise e
 
 
 def parse_args():
@@ -433,13 +453,14 @@ def parse_args():
     # parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output in terminal")
     parser.add_argument("--force", action="store_true", help="Force overwrite of existing files")
+    parser.add_argument("--ignore_error", action="store_true", help="Ignore errors during processing")
 
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    paths = ['processed', 'models']
+    paths = ['processed', 'models', 'cache']
     for p in paths:
         init_path(Path(args.out).joinpath(p), verbose=args.verbose)
 
@@ -453,6 +474,7 @@ def main():
         chunk=args.chunk,
         force=args.force,
         verbose=args.verbose,
+        ignore_error=args.ignore_error,
     )
 
 
