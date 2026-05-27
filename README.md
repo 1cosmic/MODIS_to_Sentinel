@@ -1,6 +1,6 @@
-# MODIS_to_Sentinel
+# M2S
 
-Research prototype for generating 10 m land-cover maps from Sentinel-2 imagery using MODIS-derived low-resolution labels.
+Research prototype for generating 10 m land-cover maps from Sentinel-2 imagery using MODIS-derived low-resolution labels 230 m.
 
 ## Overview
 
@@ -13,7 +13,7 @@ The project implements a MODIS-to-Sentinel mapping workflow:
 5. generate a higher-resolution thematic map;
 6. optionally validate the result against ESA WorldCover.
 
-The research target is to transfer labels from 230 m MODIS-based maps to 10 m Sentinel-2 data. The main tested area is Samara Oblast for 2020:
+The research target is to transfer labels from 230 m MODIS-based maps to 10 m Sentinel-2 data. The main tested area is Samara Oblast for 2020 and validated by etalon WorldCover with 68% f1-macro.:
 
 ![Generated land cover map of Samara Oblast for 2020 in 6 classes](docs/modis_transition.gif)
 
@@ -40,9 +40,9 @@ MODIS_to_Sentinel/
 | File | Purpose |
 |---|---|
 | `scripts/M2S_create.py` | Main CLI pipeline: sampling, training, prediction, validation. |
-| `scripts/M2S_create_fullstudy.py` | Experimental pipeline for larger cross-tile studies. |
-| `scripts/M2S_create_secure_downgrade.py` | Experimental downgrade-based pipeline. |
 | `scripts/M2S_utils.py` | Utilities for class reassignment, tile merging, and validation. |
+| `scripts/experimental/M2S_create_fullstudy.py` | Experimental pipeline for larger cross-tile studies. |
+| `scripts/experimental/M2S_create_secure_downgrade.py` | Experimental downgrade-based pipeline. |
 
 ### Modules
 
@@ -237,4 +237,6 @@ The recommended default method is `secure`. It samples reliable pixels away from
 
 ## License
 
-No license file is currently provided. Add a license before public reuse or distribution.
+This project is released under the MIT License.
+
+You are free to use, modify, and distribute this software, provided that the original copyright notice and license text are included.
