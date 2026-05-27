@@ -15,8 +15,8 @@ from tqdm import tqdm
 init()
 
 
-def load_resized_data_labels(signs, labels, force=False, resize='by_label', verbose=True):
-    px_size = 230 if resize == 'by_label' else 10
+def load_resized_data_labels(signs, labels, force=False, resize_img='by_label', verbose=True):
+    px_size = 230 if resize_img == 'by_label' else 10
     if verbose:
         print("Loading & preparing image data...")
 
@@ -38,35 +38,35 @@ def load_resized_data_labels(signs, labels, force=False, resize='by_label', verb
         print("Crop labels is done.")
 
     # Resizing by: label/image.
-    if resize == 'by_label':
+    if resize_img == 'by_label':
         if verbose:
             print("\nResizing images by 1st label:")
         sources = signs
         by = cropped_labels[0]
         resize_path = 'resized_images'
 
-    elif resize == 'by_sign':
+    elif resize_img == 'by_sign':
         if verbose:
             print("\nResizing labels by 1st image:")
         sources = labels
         by = load_tif(signs[0], only_first=True, verbose=verbose)
         resize_path = 'resized_labels'
 
-    elif resize == 'all_signs':
+    elif resize_img == 'all_signs':
         if verbose:
             print("\nResizing labels by 1st image:")
         sources = signs
         by = load_tif(signs[0], only_first=True, verbose=verbose)
-        resize_path = 'resized_labels'
+        resize_path = 'resized_images'
     else:
         raise ValueError("resize can be only [by_sign, by_label, all_signs]")
 
     i = 0
     resized = []
-    switch_mode = 'bilinear' if resize == 'by_sign' else 'nearest'
+    switch_mode = 'bilinear' if resize_img == 'by_sign' else 'nearest'
     for src in sources:
         name = os.path.basename(src)
-        out = DEFAULT_PATH[resize_path] + f'{i}_' + name
+        out = DEFAULT_PATH[resize_path]  + f'{i}_{px_size}_' + name
         i += 1
         if not os.path.exists(out) or force:
             cut_tif_by(src, by, out, resize=px_size, mode=switch_mode, verbose=verbose)
@@ -75,13 +75,13 @@ def load_resized_data_labels(signs, labels, force=False, resize='by_label', verb
                 print("Loading from cache...")
         resized.append(load_tif(out, only_first=True, verbose=verbose))
     if verbose:
-        print(f"Resizing {resize} is done.")
+        print(f"Resizing {resize_img} is done.")
 
     if verbose:
         print("\nData and labels prepared.\n")
-    if resize in ['by_label', 'all_signs']:
+    if resize_img in ['by_label', 'all_signs']:
         return resized, cropped_labels
-    elif resize == 'by_sign':
+    elif resize_img == 'by_sign':
         loaded_signs = [load_tif(s, verbose=verbose, only_first=True) for s in signs]
         return loaded_signs, resized
     else:
@@ -96,8 +96,6 @@ def mask_cosine_dist_to_median_sign(signs, label, take_q, r=20, median_mode='sim
     x = np.moveaxis(x, 0, -1)
     label = label['array']
     classes = np.unique(label[label > 0])
-
-    r = 20
 
     print("Calculating secure area for selecting...")
     min_in_neighborhood = minimum_filter(label, size=(r*2 + 1))
@@ -140,7 +138,7 @@ def mask_cosine_dist_to_median_sign(signs, label, take_q, r=20, median_mode='sim
             )
 
             print(
-                f"removed signatures for [label > {cl}]: {result_mask[mask_remove].size}"
+                f"removed signatures for [label != {cl}]: {result_mask[mask_remove].size}"
             )
             result_mask[mask_remove] = 0
 
@@ -165,9 +163,6 @@ def mask_cosine_dist_to_median_sign(signs, label, take_q, r=20, median_mode='sim
                 idx[1][not_similar],
             )
 
-            print(
-                f"removed signatures for [label == {cl}]: {result_mask[mask_remove].size}"
-            )
             result_mask[mask_remove] = 0
 
 
@@ -214,46 +209,46 @@ def create_texture_layer(r, nir, out=None, resize_by=None, force=False, order=No
 
         print("NDVI…")
         t0 = time()
-        homogeneous_array = (r - nir) / (r + nir + 1e-6)
+        texture = (r - nir) / (r + nir + 1e-6)
         dt = time() - t0
         print(f"NDVI done: {dt:.3f}s   | per Mpx: {dt/N:.3f}s")
 
         t1 = time()
-        gx = sobel(homogeneous_array, axis=1)
+        gx = sobel(texture, axis=1)
         dt = time() - t1
         print(f"gx done: {dt:.3f}s     | per Mpx: {dt/N:.3f}s")
 
         t2 = time()
-        gy = sobel(homogeneous_array, axis=0)
+        gy = sobel(texture, axis=0)
         dt = time() - t2
         print(f"gy done: {dt:.3f}s     | per Mpx: {dt/N:.3f}s")
 
         t3 = time()
         gx = gx.ravel(); gy = gy.ravel()
-        homogeneous_array = np.zeros_like(gx)
+        texture = np.zeros_like(gx)
         for i in tqdm(range(0, gy.size, chunk)):
-            homogeneous_array[i:i+chunk] = np.hypot(gx[i:i+chunk], gy[i:i+chunk])
-        homogeneous_array = homogeneous_array.reshape(size)
+            texture[i:i+chunk] = np.hypot(gx[i:i+chunk], gy[i:i+chunk])
+        texture = texture.reshape(size)
         dt = time() - t3
         del gx, gy
         gc.collect()
         print(f"hypot done: {dt:.3f}s  | per Mpx: {dt/N:.3f}s")
 
         t4 = time()
-        homogeneous_array = uniform_filter(homogeneous_array, size=23)
+        texture = uniform_filter(texture, size=23)
         dt = time() - t4
         print(f"uniform_filter done: {dt:.3f}s | per Mpx: {dt/N:.3f}s")
         total = time() - t0
         print(f"total: {total:.3f}s | total per Mpx: {total/N:.3f}s")
 
-        r_obj['array'] = homogeneous_array
+        r_obj['array'] = texture
         save_tif(r_obj, out, dtype=gdal.GDT_Float32, verbose=verbose)
         res = r_obj
 
     if resize_by is not None:
         resize_by = load_tif(resize_by, only_first=True)
-        print("Start resizing of homoheneous layer.")
-        resized_out = DEFAULT_PATH['resized_layers'] + 'homogeneous_layer.tif'
+        print("Start resizing of texture layer.")
+        resized_out = DEFAULT_PATH['resized_layers'] + 'texture_layer.tif'
         if not os.path.exists(resized_out) or force:
             cut_tif_by(out, resize_by, resized_out, resize=True, mode='bilinear',verbose=verbose)
         res = load_tif(resized_out, only_first=True)
@@ -349,7 +344,7 @@ def create_homogeneous_layer(sentinel_red, sentinel_nir, modis_label, resize='by
 
 def create_mask(label: list[dict], signs: list[dict], count_signs:int = 5000, r=20,
                 mode:str = 'random', save_mask=False,
-                feature_layer=None, feature_percent=0.1, stratify=False, draw=False, verbose=True, median_mode='similar') -> np.ndarray:
+                feature_layer=None, feature_percent=0.1, stratify=False, draw=False, verbose=True, safe_full=False, median_mode='similar') -> np.ndarray:
 
     if verbose:
         print("Creating mask...")
@@ -361,36 +356,40 @@ def create_mask(label: list[dict], signs: list[dict], count_signs:int = 5000, r=
 
     if mode == 'random':
         rows, cols = np.where(label_array > 0)
-        idx = np.random.choice(rows.size, size=count_signs, replace=False)
+
+        if stratify:
+            count = rows.size
+        else:
+            count = count_signs if count_signs < rows.size else rows.size
+
+        idx = np.random.choice(rows.size, size=count, replace=False)
         idx = (rows[idx], cols[idx])
         mask[idx] = True
 
 
+    # elif mode == 'unique':
+    #     t0 = time()
+    #     x = np.array([s['array'] for s in signs])
+    #     x = np.moveaxis(x, 0, -1)
 
-    if mode == 'unique':
-        t0 = time()
-        x = np.array([s['array'] for s in signs])
-        x = np.moveaxis(x, 0, -1)
+    #     h, w, c = x.shape
+    #     pixels = x.reshape(-1, c)
 
-        h, w, c = x.shape
-        pixels = x.reshape(-1, c)
+    #     # Храним хеши и индексы первых вхождений
+    #     seen = {}
+    #     idx = np.zeros(len(pixels), dtype=bool)
 
-        # Храним хеши и индексы первых вхождений
-        seen = {}
-        idx = np.zeros(len(pixels), dtype=bool)
-
-        for i in tqdm(range(len(pixels)), desc="Hashing"):
-            h = hash(pixels[i].tobytes())
-            if h not in seen:
-                seen[h] = i
-                idx[i] = 1
+    #     for i in tqdm(range(len(pixels)), desc="Hashing"):
+    #         h = hash(pixels[i].tobytes())
+    #         if h not in seen:
+    #             seen[h] = i
+    #             idx[i] = 1
         
-        mask = idx.reshape(h, w)
-
+    #     mask = idx.reshape(h, w)
 
     elif mode == 'secure':
-        min_in_neighborhood = minimum_filter(label_array, size=(r*2 + 1))
-        max_in_neighborhood = maximum_filter(label_array, size=(r*2 + 1))
+        min_in_neighborhood = minimum_filter(label_array, size=(r*2))
+        max_in_neighborhood = maximum_filter(label_array, size=(r*2))
         mask_secure_px = (min_in_neighborhood == max_in_neighborhood) & (label_array > 0)
         idx = np.where(mask_secure_px)
 
@@ -419,11 +418,16 @@ def create_mask(label: list[dict], signs: list[dict], count_signs:int = 5000, r=
         if mode == 'texture':
             classes = np.unique(label_array[label_array > 0])
             homogen_mask = np.zeros_like(label_array, dtype=bool)
-            for cl in classes:
 
-                l_mean = np.quantile(feature_layer[label_array == cl], 0.5 - feature_percent / 2)
-                mean = np.quantile(feature_layer[label_array == cl], 0.5)
-                r_mean = np.quantile(feature_layer[label_array == cl], 0.5 + feature_percent / 2)
+            min_in_neighborhood = minimum_filter(label_array, size=(r*2))
+            max_in_neighborhood = maximum_filter(label_array, size=(r*2))
+            mask_secure_px = (min_in_neighborhood == max_in_neighborhood) & (label_array > 0)
+            
+            for cl in classes:
+                mask = (label_array == cl) & mask_secure_px
+                l_mean = np.quantile(feature_layer[mask], 0.5 - feature_percent / 2)
+                mean = np.quantile(feature_layer[mask], 0.5)
+                r_mean = np.quantile(feature_layer[mask], 0.5 + feature_percent / 2)
 
                 cursor = (((feature_layer >= l_mean)  &
                            (feature_layer <= r_mean)) & 
@@ -436,7 +440,12 @@ def create_mask(label: list[dict], signs: list[dict], count_signs:int = 5000, r=
             classes = np.unique(label_array[label_array > 0])
             homogen_mask = np.zeros_like(label_array, dtype=bool)
 
+            # min_in_neighborhood = minimum_filter(label_array, size=(r*2))
+            # max_in_neighborhood = maximum_filter(label_array, size=(r*2))
+            # mask_secure_px = (min_in_neighborhood == max_in_neighborhood) & (label_array > 0)
+
             for cl in classes:
+                # true_px = (label_array == cl) & mask_secure_px
                 true_px = (label_array == cl)
                 q = np.quantile(feature_layer[true_px], feature_percent)
                 q2 = np.quantile(feature_layer[true_px], 1 - feature_percent)
@@ -447,13 +456,11 @@ def create_mask(label: list[dict], signs: list[dict], count_signs:int = 5000, r=
 
                 true_px = (feature_layer > 0) & (feature_layer <= q) & true_px  # MODE 1: take only homogen
                 print("Homogen mode: only homogen")
-                # true_px = ((homogen_layer <= q) | (homogen_layer >= q2)) & true_px    # MODE 2: take homogen & extragen
-                # print("Homogen mode: homogen & extragen")
-                # true_px = ((feature_layer >= q_mean_l) & (feature_layer <= q_mean_r)) & true_px    # MODE 2: take window of mean 
-                # print("Homogen mode: in window around mean")
 
                 idx = np.where(true_px)
                 # count = int(idx[0].size * percent)
+                if count_signs > idx[0].size:
+                    count_signs = idx[0].size
                 i = np.random.choice(idx[0].size, size=count_signs, replace=False)
                 idx = (idx[0][i], idx[1][i])
                 homogen_mask[idx] = 1
@@ -470,16 +477,14 @@ def create_mask(label: list[dict], signs: list[dict], count_signs:int = 5000, r=
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
-    # OPTIMISE THIS FUNC! 
     if stratify:
-        classes, counts = np.unique(label_array[mask], return_counts=True)
+        classes, counts = np.unique(label_array[mask & (label_array > 0)], return_counts=True)
         if verbose:
             print("Start stratify. Before output:", classes, counts)
         balanced = np.zeros_like(label_array, dtype=bool)
         min_c = counts.min() if counts.min() < count_signs else count_signs
 
         for c in classes:
-            # if c == 6: continue
             rows, cols = np.where((label_array == c) & mask)
             idx = np.random.choice(rows.size, size=min_c, replace=False)
             idx = (rows[idx], cols[idx])
@@ -534,15 +539,20 @@ def stack_and_zip(signs: list, labels: list, mask: np.ndarray, verbose=True):
 
 
 # Iteration of dataset for training with transform data to tensor.
-def generate_dataset(signs, labels, count, force=False, mask_mode='random', layer_mode=None, layer_type='static', median_mode='similar', save_mask=False, r=20, feature_percent=0.1, stratify=False, resize='by_label', draw=False, verbose=True):
+def generate_dataset(signs, labels, count=None, percent=None, force=False, mask_mode='random', layer_mode=None, layer_type='static', median_mode='similar', save_mask=False, r=20, feature_percent=0.1, stratify=False, resize_img='by_label', draw=False, verbose=True):
 
     resized_signs, resized_labels = load_resized_data_labels(signs['path'].to_list(), 
                                                              labels['path'].to_list(), 
-                                                             resize=resize, force=force, verbose=verbose)
+                                                             resize_img=resize_img, force=force, verbose=verbose)
 
     red_layers = signs.query("band == 'r'")['path'].to_list()
     nir_layers = signs.query("band == 'n'")['path'].to_list()
     modis_label = resized_labels[0]
+
+    if percent is not None:
+        count = int(modis_label['array'].size * percent)
+        if verbose:
+            print(f"Take percent of signs: {count}")
 
     if len(red_layers) != len(nir_layers):
         Exception("Count of red != nir")
@@ -555,11 +565,11 @@ def generate_dataset(signs, labels, count, force=False, mask_mode='random', laye
     feature = []
     if 'homogeneous' == layer_mode:
         for i in range(layer_count):
-            homogeneous = create_homogeneous_layer(red_layers[i], nir_layers[i], modis_label, resize=resize, force=force, order=i, verbose=verbose)
+            homogeneous = create_homogeneous_layer(red_layers[i], nir_layers[i], modis_label, resize=resize_img, force=force, order=i, verbose=verbose)
             feature.append(homogeneous)
 
     elif 'texture' == layer_mode:
-        resize_by = resized_labels[0]['path'] if resize == 'by_label' else None
+        resize_by = resized_labels[0]['path'] if resize_img == 'by_label' else None
         for i in range(layer_count):
             texture = create_texture_layer(red_layers[i], nir_layers[i], out=None, resize_by=resize_by, force=force, order=i, verbose=verbose)
             feature.append(texture)
@@ -567,10 +577,10 @@ def generate_dataset(signs, labels, count, force=False, mask_mode='random', laye
 
     feature_layer = None
     if 'homogeneous' == mask_mode:
-        feature_layer = create_homogeneous_layer(red_layers[0], nir_layers[0], modis_label, resize=resize, force=force, verbose=verbose)
+        feature_layer = create_homogeneous_layer(red_layers[0], nir_layers[0], modis_label, resize=resize_img, force=force, verbose=verbose)
 
     elif 'texture' == mask_mode:
-        resize_by = resized_labels[0]['path'] if resize == 'by_label' else None
+        resize_by = resized_labels[0]['path'] if resize_img == 'by_label' else None
         feature_layer = create_texture_layer(red_layers[0], nir_layers[0], out=None, resize_by=resize_by, force=force, order=0, verbose=verbose)
 
     mask = create_mask(resized_labels, resized_signs, mode=mask_mode, 
@@ -582,4 +592,5 @@ def generate_dataset(signs, labels, count, force=False, mask_mode='random', laye
         resized_signs.extend(feature)
 
     zip_signs, zip_labels = stack_and_zip(resized_signs, resized_labels, mask, verbose=verbose)
-    return zip_signs, zip_labels, resized_signs, resized_labels
+
+    return zip_signs, zip_labels, resized_signs, resized_labels, mask

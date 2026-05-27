@@ -4,6 +4,7 @@ import glob
 import argparse
 import pandas as pd
 import numpy as np
+from sklearn.metrics import classification_report
 
 
 class_matching = pd.DataFrame({
@@ -12,6 +13,44 @@ class_matching = pd.DataFrame({
 })
 
 color_palette = {}
+
+
+def load_tif(data: str, verbose=True):
+    if not os.path.exists(data):
+        raise ValueError(f"File not found: {data}")
+    # print(f"Loading file {data}...")
+
+    src = gdal.Open(str(data))
+    result = {
+            "path": data,
+            "array": src.ReadAsArray(),
+            "size_x": src.RasterXSize,
+            "size_y": src.RasterYSize,
+            "transform": src.GetGeoTransform(),
+            "projection": src.GetProjection(),
+        }
+    # printf("File loaded successfully", verbose)
+    return result
+
+
+def cut_tif_by(src, by, out, mode='bilinear', resize=10, aligned=False, verbose=False) -> str:
+    by = load_tif(by, verbose=verbose)
+    size_x = by['size_x']
+    size_y = by['size_y']
+    gt = by['transform']
+    bounds = [gt[0], gt[3] + gt[5] * size_y,      # minX, minY
+            gt[0] + gt[1] * size_x, gt[3]]      # maxX, maxY
+    gdal.Warp(
+        str(out), str(src),
+        outputBounds=bounds,
+        dstSRS=by['projection'],
+        xRes=resize, yRes=resize,
+        resampleAlg=mode, targetAlignedPixels=aligned if aligned else None,
+        dstNodata=0)
+    if verbose:
+        print(f"File {os.path.basename(src)} was cutted and saved to {out}")
+
+    return out
 
 
 def downgrade_classes(src, out, reassign=None, force=False, verbose=True):
@@ -79,19 +118,20 @@ def downgrade_classes(src, out, reassign=None, force=False, verbose=True):
 def stick_tifs(src, out, force=False, verbose=True):
 
     # List your input files in desired band order
-    input_files = sorted(glob.glob(f"{src}/*.tif"))
-    if not input_files:
+    res = sorted(glob.glob(src))
+    print(src, res)
+    if not res:
         if verbose:
             print("\nNo input files found.")
         return
 
     if verbose:
-        print(f"\nFound {len(input_files)} files to merge:")
-        for f in input_files:
+        print(f"\nFound {len(res)} files to merge:")
+        for f in res:
             print(" -", os.path.basename(f))
 
-    vrt_options = gdal.BuildVRTOptions(separate=True)
-    vrt = gdal.BuildVRT("temp.vrt", input_files, options=vrt_options)
+    vrt_options = gdal.BuildVRTOptions()
+    vrt = gdal.BuildVRT("temp.vrt", res, options=vrt_options)
     translate_options = gdal.TranslateOptions(
         format="GTiff",
         creationOptions=["BIGTIFF=YES"]  # BIGTIFF for large files
@@ -99,12 +139,23 @@ def stick_tifs(src, out, force=False, verbose=True):
     gdal.Translate(out, vrt, options=translate_options)
     vrt = None
 
+
+def validate(res, etalon, out, force=False, verbose=True):
+    etalon = cut_tif_by(etalon, res, out + "temp_cropped_etalon.tif", mode='nearest', resize=10, aligned=True, verbose=verbose)
+    res = load_tif(res, verbose=verbose)['array']
+    etalon = load_tif(etalon, verbose=verbose)['array']
+
+    mask = (etalon > 0) & (res > 0)
+    report = classification_report(etalon[mask].flatten(), res[mask].flatten(), zero_division=0)
+    print(report)
+
         
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Downgrade MODIS classes")
-    parser.add_argument("--src", required=True, help="Source directory with .tif files")
-    parser.add_argument("--out", required=True, help="Output directory")
+    parser = argparse.ArgumentParser(description="Utils for M2S_create scripts: downgrade of MODIS classes, stick tiles and validate by etalon map.")
+    parser.add_argument("--src", required=True, help="Source directory with MODIS .tif files, like 'maps/*.tif'")
+    parser.add_argument("--out", required=True, action="store", help="Output directory")
 
+    parser.add_argument("--validate", action="store", help="Path to validation labels (by etalon)")  # --- IGNORE ---
     parser.add_argument("--assign_cache_classes", action="store_true", help="Use cached class assignment")
     parser.add_argument("--assign_new_classes", action="store", help="Path to class assignment CSV template")
     parser.add_argument("--stick", action="store_true", help="Stick tifs from source directory into one file")
@@ -117,3 +168,5 @@ if __name__ == "__main__":
         downgrade_classes(args.src, args.out, args.assign_new_classes, args.force, args.verbose)
     elif args.stick:
         stick_tifs(args.src, args.out, args.force, args.verbose)
+    elif args.validate:
+        validate(args.src, args.validate, args.out, args.force, args.verbose)

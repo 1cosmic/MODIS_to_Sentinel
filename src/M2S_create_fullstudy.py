@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from osgeo import gdal
 import numpy as np
-from scipy.ndimage import minimum_filter, maximum_filter, median_filter
+from scipy.ndimage import minimum_filter, maximum_filter
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
@@ -100,13 +100,10 @@ def parse_files(src, type) -> pd.DataFrame:
     
     paths = []
     src_path = Path(src)
-    if src_path.is_dir():
+    if src_path.is_dir() or src_path.is_file():
         paths.extend(src_path.rglob('*.tif'))
-    elif src_path.is_file():
-        paths.append(src_path)
         if not paths:
             raise ValueError(f"No .tif files found in directory: {src}")
-
     data = [template(p) for p in paths if p.is_file()]
     df = pd.DataFrame(data)
     return df
@@ -192,24 +189,26 @@ def cut_tif_by(src, by, out, mode='bilinear', resize=10, aligned=False, verbose=
 
 ##############
 # Pipeline steps
-def prepare_and_load_data(signs, label, out, cache, verbose=False):
+def prepare_and_load_data(signs, labels, out, cache, verbose=False):
     if not signs:
         raise ValueError(f"No sign files found.")
-    if not label:
+    if not labels:
         raise ValueError(f"No label files found.")
-
-    init_path(out)
+    # msg = f"Preparing and loading data for {len(signs)} signs, {len(labels)} labels"
+    # printf(msg, verbose)
 
     prepared_signs = []
     prepared_labels = []
 
-    name = os.path.basename(str(label))
+    init_path(out)
+
+    name = os.path.basename(labels[0])
     status = f"Prepare & load label: {name}"
     printf(status, verbose)
 
     cutted_out = out.joinpath(name)
-    label = cut_tif_by(label, signs[0], str(cutted_out), mode='nearest', resize=10)
-    prepared_labels.append(load_tif(label))
+    l = cut_tif_by(labels[0], signs[0], str(cutted_out), mode='nearest', resize=10)
+    prepared_labels.append(load_tif(l))
 
     i = 0
     pbar = tqdm(signs, desc="Preparing signs") if verbose else signs
@@ -234,72 +233,42 @@ def prepare_and_load_data(signs, label, out, cache, verbose=False):
     # printf("Data prepared and loaded successfully. Convert to np.array...", verbose)
     signs = np.stack([s['array'] for s in prepared_signs])
     signs = np.moveaxis(signs, 0, -1)  # (C, H, W) -> (H, W, C)
-    label = np.stack([l['array'] for l in prepared_labels])
-    label = np.moveaxis(label, 0, -1)  # (C, H, W) -> (H, W, C)
-    if label.shape[2] == 1:
-        label = np.squeeze(label, axis=2)  # (H, W, 1) -> (H, W)
+    labels = np.stack([l['array'] for l in prepared_labels])
+    labels = np.moveaxis(labels, 0, -1)  # (C, H, W) -> (H, W, C)
+    if labels.shape[2] == 1:
+        labels = np.squeeze(labels, axis=2)  # (H, W, 1) -> (H, W)
     t_end = time()
-    # msg = f"Converted to np.array successfully in {t_end - t_start:.2f} seconds. Signs shape: {signs.shape}, Labels shape: {labels.shape}"
+    msg = f"Converted to np.array successfully in {t_end - t_start:.2f} seconds. Signs shape: {signs.shape}, Labels shape: {labels.shape}"
     # printf(msg, verbose)
 
     # For creating map we need template with geoinformation, but without data
     template = prepared_signs[0]
     template['array'] = None
-    return signs, label, template
+    return signs, labels, template
 
 
 
-def create_dataset(signs, label, method='secure', r=20, sign_per_class=5000, verbose=False):
-    # msg = "Creating dataset from signs and labels use method 'secure'"
+def create_dataset(signs, label, r=20, sign_per_class=5000, verbose=False):
+    msg = "Creating dataset from signs and labels use method 'secure'"
     # printf(msg, verbose)
 
-    t_start = time()
     mask = (label > 0) & (signs.sum(axis=-1) > 0)  # take only valid signs and labels
+
+    t_start = time()
     # printf("Generating safe zones for sampling...", verbose)
     min_neighbors = minimum_filter(label, size=(r+1) * 2)
     max_neighbors = maximum_filter(label, size=(r+1) * 2)
     safezone = (min_neighbors == max_neighbors) & (mask > 0)
+
     classes, per_class = np.unique(label[safezone], return_counts=True)
+    sign_per_class = min(sign_per_class, per_class.min())
 
-    if method == 'median':
-        mask = np.ones_like(label, dtype=bool)
-        mask[safezone] = 0
-        for cl in tqdm(classes, desc=f"Calc of median px, method {method}") if verbose else classes:
-            to_class = safezone & (label == cl)
-            y = np.median(signs[to_class], axis=0)
-            norm_x = np.linalg.norm(signs[to_class], axis=1)
-            norm_y = np.linalg.norm(y)
-            scalar_x_y = signs[to_class].dot(y)
-            cosine_dist = 1 - scalar_x_y / (norm_x * norm_y)
-            dist_to_median = np.quantile(cosine_dist, 0.5)
-
-            not_similar = (cosine_dist > dist_to_median)
-            idx = np.where(to_class)
-            remove = (
-                idx[0][not_similar],
-                idx[1][not_similar],
-            )
-            mask[remove] = 0
-            # print(f"Median sign:", dist_to_median)
-
-        median_mask = np.zeros_like(mask)
-        classes, per_class = np.unique(label[mask], return_counts=True)
-        for cl in tqdm(classes, desc=f"Select of median px, mode {method}") if verbose else classes:
-            idx = np.where(safezone & (label == cl))
-            i = np.random.choice(len(idx[0]), size=sign_per_class, replace=False)
-            idx = (idx[0][i], idx[1][i])
-            median_mask[idx] = True
-        mask = median_mask
-            
-    elif method == 'secure':        
-        mask = np.zeros_like(label, dtype=bool)
-        sign_per_class = min(sign_per_class, per_class.min())
-        for cl in tqdm(classes, desc=f"Selecting signs per class, mode '{method}'") if verbose else classes:
-            idx = np.where(safezone & (label == cl))
-            i = np.random.choice(len(idx[0]), size=sign_per_class, replace=False)
-            idx = (idx[0][i], idx[1][i])
-            mask[idx] = True
-            
+    mask = np.zeros_like(label, dtype=bool)
+    for cl in tqdm(classes, desc="Selecting signs per class") if verbose else classes:
+        idx = np.where(safezone & (label == cl))
+        i = np.random.choice(len(idx[0]), size=sign_per_class, replace=False)
+        idx = (idx[0][i], idx[1][i])
+        mask[idx] = True
     X = signs[mask]
     y = label[mask]
     t_end = time()
@@ -308,22 +277,19 @@ def create_dataset(signs, label, method='secure', r=20, sign_per_class=5000, ver
     return X, y
 
 
-def train_model(X, y, verbose, return_report=False):
+def train_model(X, y, verbose):
     msg = f"Training model"
-    # printf(msg, verbose)
+    printf(msg, verbose)
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
+    model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     printf(f"Model trained successfully with accuracy: {accuracy:.2f}", verbose)
-    rep = classification_report(y_test, y_pred, output_dict=True)
-
-    if return_report:
-        return model, rep
-    else:
-        return model
+    # print(classification_report(y_test, y_pred))
+    
+    return model
 
 
 def create_map(model, signs, out, template, chunk=100, verbose=False):
@@ -348,7 +314,6 @@ def create_map(model, signs, out, template, chunk=100, verbose=False):
         res[idx[i:end]] = model.predict(signs[idx[i:end]])
 
     res = res.reshape(H, W)
-    res = median_filter(res, size=5)
     template['array'] = res
     save_tif(template, out, 
              dtype=gdal.GDT_Byte, with_bg=True, color_palette=color_palette, verbose=verbose)
@@ -360,14 +325,12 @@ def validate_map(result, etalon, out=None, verbose=False):
     printf(msg, verbose)
 
     mask = (result > 0) & (etalon > 0)
-    validate = classification_report(result[mask].ravel(), etalon[mask].ravel(), output_dict=True)
+    validate = classification_report(result[mask].ravel(), etalon[mask].ravel())
     printf(validate, verbose)
     if out is not None:
         with open(out, 'w') as f:
             f.write(validate)
         printf(f"Validation report saved to {out}", verbose)
-
-    return validate
 
 
 ##############
@@ -380,7 +343,6 @@ def run_pipeline(
     channels: List[str],
     etalons: Optional[str],
     chunk: int,
-    method: str,
     verbose: bool,
     force: bool,
     ignore_error: bool,
@@ -395,21 +357,19 @@ def run_pipeline(
 
     validate = False
     if etalons is not None:
-        etalons = parse_files(etalons, type='etalon')
-        print(etalons)
-        etalons.query("year in @years")
+        etalons = parse_files(etalons, type='etalon').query("year in @years")
         if etalons.empty:
             raise ValueError(f"No etalon files found for years {years}. Please, check the path and format of etalon files.")
         validate = True
 
-    valid_train = []
-    valid_etalon = []
+    full_X = []
+    full_y = []
     
     # For each tile and year create map, validate it with etalon (if provided) and save to output
-    qbar = tqdm(total=len(tiles) * len(years), desc="Processing tiles and years") if verbose else None
+    qbar = tqdm(total=len(tiles) * len(years)) if verbose else None
     for tile in tiles:
         for year in years:
-            qbar.set_description(f"Processing tile {tile} for  {year}") if verbose else None
+            qbar.set_description(f"Creating dataset for {tile} in {year}") if verbose else None
             qbar.update(1) if verbose else None
 
             curdir = Path(out).joinpath(tile).joinpath(str(year))
@@ -424,47 +384,18 @@ def run_pipeline(
                 printf(f"No sign/label files found for tile {tile} and year {year}. Skipping...", verbose)
                 continue
             signs = signs['path'].tolist()
-            label = label['path'].tolist()[0]  # take only 1st label!
+            label = label['path'].tolist()
 
             try:
                 # If result map's exist - skip double work, but if need to rewrite - use force
-                if not os.path.exists(save_out) or force:
-                    # Prepare & load this data to numpy from source.tif
-                    signs, label, template = prepare_and_load_data(signs, label, 
-                                                                out=processed_out.joinpath(tile),
-                                                                cache=cache_out,
-                                                                verbose=verbose)
-                    X, y = create_dataset(signs, label, sign_per_class=5000, method=method, verbose=verbose)
-                    m, report_train = train_model(X, y, verbose, return_report=True)
-                    X, y, label = None, None, None
-                    tile_map = create_map(m, signs, save_out, template=template, chunk=chunk, verbose=verbose)
-                    signs = None
-                    gc.collect()
-
-                    # Safe res of validation: for train
-                    report_train['tile'] = tile
-                    report_train['year'] = year
-                    valid_train.append(report_train)
-                else:
-                    qbar.set_description(f"Skipping tile {tile}") if verbose else None
-                    tile_map = load_tif(save_out, verbose=verbose)
-
-                # Validate result map with etalon (if provided)
-                if validate:
-                    etalon = etalons.query("year == @year")['path'].tolist()
-                    name = os.path.basename(etalon[0]).replace(".tif", "")
-                    etalon = etalon[0]   # take only 1st etalon in this year
-                    etalon = cut_tif_by(etalon, str(save_out), 
-                                        curdir.joinpath(f"etalon_{name}.tif"), 
-                                        mode='nearest', resize=10, aligned=True, verbose=verbose)
-                    etalon = load_tif(etalon, verbose=verbose)['array']
-                    tile_map = tile_map['array']
-                    report_etalon = validate_map(tile_map, etalon, verbose=False)
-
-                    # Safe res of validation: for train
-                    report_etalon['tile'] = tile
-                    report_etalon['year'] = year
-                    valid_etalon.append(report_etalon)
+                # Prepare & load this data to numpy from source.tif
+                signs, label, _ = prepare_and_load_data(signs, label, 
+                                                            out=processed_out.joinpath(tile),
+                                                            cache=cache_out,
+                                                            verbose=verbose)
+                X, y = create_dataset(signs, label, sign_per_class=500, verbose=verbose)
+                full_X.append(X)
+                full_y.append(y)
 
             except Exception as e:
                 if ignore_error:
@@ -473,13 +404,72 @@ def run_pipeline(
                 else:
                     raise e
 
-        pd.DataFrame(valid_train).to_csv(Path(out).joinpath("train_classification_report.csv"))
-        pd.DataFrame(valid_etalon).to_csv(Path(out).joinpath("etalon_classification_report.csv"))
+    full_X = np.concatenate(full_X, axis=0)
+    full_y = np.concatenate(full_y, axis=0)
+    print("shapes:", full_X.shape, full_y.shape)
+    m = train_model(full_X, full_y, verbose)
+
+
+    qbar = tqdm(total=len(tiles) * len(years)) if verbose else None
+    for tile in tiles:
+        for year in years:
+            qbar.set_description(f"Creating dataset for {tile} in {year}") if verbose else None
+            qbar.update(1) if verbose else None
+
+            curdir = Path(out).joinpath(tile).joinpath(str(year))
+            init_path(curdir, verbose=verbose)
+            save_out = curdir.joinpath(f"M2S_{tile}_{year}.tif")
+
+            # Aggregate the signs, labels for the current tile and year
+            signs = src.query("tile == @tile and year == @year and channel in @channels")
+            signs = signs.sort_values(by=['year', 'month', 'day', 'channel'])
+            label = labels.query("year == @year").sort_values('year')
+
+            if signs.empty or label.empty:
+                printf(f"No sign/label files found for tile {tile} and year {year}. Skipping...", verbose)
+                continue
+            signs = signs['path'].tolist()
+            label = label['path'].tolist()
+
+            try:
+                # If result map's exist - skip double work, but if need to rewrite - use force
+                # Prepare & load this data to numpy from source.tif
+                signs, label, template = prepare_and_load_data(signs, label, 
+                                                            out=processed_out.joinpath(tile),
+                                                            cache=cache_out,
+                                                            verbose=verbose)
+            except Exception as e:
+                if ignore_error:
+                    printf(f"Error processing tile {tile} for year {year}: {e}", verbose=verbose)
+                    continue 
+                else:
+                    raise e
+
+            if not os.path.exists(save_out) or force:
+                tile_map = create_map(m, signs, save_out, template=template, chunk=chunk, verbose=verbose)
+
+            else:
+                qbar.set_description(f"Skipping tile {tile}") if verbose else None
+                tile_map = load_tif(save_out, verbose=verbose)
+
+            # Validate result map with etalon (if provided)
+            if validate:
+                etalon = etalons.query("year == @year")['path'].tolist()
+                name = os.path.basename(etalon[0]).replace(".tif", "")
+                etalon = etalon[0]   # take only 1st etalon in this year
+                etalon = cut_tif_by(etalon, str(save_out), 
+                                    curdir.joinpath(f"etalon_{name}.tif"), 
+                                    mode='nearest', resize=10, aligned=True, verbose=verbose)
+                etalon = load_tif(etalon, verbose=verbose)['array']
+                tile_map = tile_map['array']
+                validate_map(tile_map, etalon,
+                                    out=curdir.joinpath(f"valid_report_{name}.txt"), verbose=verbose)
+
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="CLI for running the pipeline of creating a map from MODIS to Sentinel-2."
+        description="CLI for running the pipeline of creating a map from MODIS data"
     )
 
     # Required / main args
@@ -488,7 +478,6 @@ def parse_args():
     parser.add_argument("--year", required=True, type=str, help="Sampling years: 2018-2020")
     parser.add_argument("--out", default=os.getcwd(), help="Path to output map")
     parser.add_argument("--chunk", default=300, type=int, help="Chunk size (in MB) for processing")
-    parser.add_argument("--method", default='secure', help="Change the method of selecting signs [median, secure]. Default 'secure'")
     parser.add_argument(
         "--channels",
         type=lambda s: s.split(","),
@@ -524,7 +513,6 @@ def main():
         channels=args.channels,
         etalons=args.validate_by,
         chunk=args.chunk,
-        method=args.method,
         force=args.force,
         verbose=args.verbose,
         ignore_error=args.ignore_error,

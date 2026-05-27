@@ -37,7 +37,8 @@ def create_map(signs, model, name: str, count_chunks=2, layer_mode=None, layer_t
 
     loaded_signs = []
     for sig in signs:
-        loaded_signs.append(load_tif(sig, only_first=True))
+        s = load_tif(sig, only_first=True)
+        loaded_signs.append(s)
     loaded_signs.extend(textures)
 
     # model = joblib.load(model)

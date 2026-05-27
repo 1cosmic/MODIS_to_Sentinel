@@ -192,7 +192,7 @@ def cut_tif_by(src, by, out, mode='bilinear', resize=10, aligned=False, verbose=
 
 ##############
 # Pipeline steps
-def prepare_and_load_data(signs, label, out, cache, verbose=False):
+def prepare_and_load_data(signs, label, out, cache, resize_img=10, verbose=False):
     if not signs:
         raise ValueError(f"No sign files found.")
     if not label:
@@ -208,7 +208,7 @@ def prepare_and_load_data(signs, label, out, cache, verbose=False):
     printf(status, verbose)
 
     cutted_out = out.joinpath(name)
-    label = cut_tif_by(label, signs[0], str(cutted_out), mode='nearest', resize=10)
+    label = cut_tif_by(label, signs[0], str(cutted_out), mode='nearest', resize=resize_img, aligned=True, verbose=verbose)
     prepared_labels.append(load_tif(label))
 
     i = 0
@@ -217,12 +217,12 @@ def prepare_and_load_data(signs, label, out, cache, verbose=False):
         name = os.path.basename(s)
         gt = gdal.Open(str(s)).GetGeoTransform()
         size_x, size_y = gt[1], gt[5]
-        if size_x != 10 or size_y != -10:
+        if size_x != resize_img or size_y != -resize_img:
             status = f"Resizing sign: {name}"
             if verbose:
                 pbar.set_description(status)
             resized_out = cache.joinpath(f"{i}_{name}")
-            s = cut_tif_by(s, prepared_labels[0]['path'], str(resized_out), mode='bilinear', resize=10)
+            s = cut_tif_by(s, prepared_labels[0]['path'], str(resized_out), mode='bilinear', resize=resize_img, aligned=True, verbose=verbose)
             i += 1
 
         if verbose:
@@ -256,8 +256,8 @@ def create_dataset(signs, label, method='secure', r=20, sign_per_class=5000, ver
     t_start = time()
     mask = (label > 0) & (signs.sum(axis=-1) > 0)  # take only valid signs and labels
     # printf("Generating safe zones for sampling...", verbose)
-    min_neighbors = minimum_filter(label, size=(r+1) * 2)
-    max_neighbors = maximum_filter(label, size=(r+1) * 2)
+    min_neighbors = minimum_filter(label, size=(r * 2))
+    max_neighbors = maximum_filter(label, size=(r * 2))
     safezone = (min_neighbors == max_neighbors) & (mask > 0)
     classes, per_class = np.unique(label[safezone], return_counts=True)
 
@@ -291,6 +291,7 @@ def create_dataset(signs, label, method='secure', r=20, sign_per_class=5000, ver
             median_mask[idx] = True
         mask = median_mask
             
+    # TODO: RESUME HERE: построить 3 карты по методам
     elif method == 'secure':        
         mask = np.zeros_like(label, dtype=bool)
         sign_per_class = min(sign_per_class, per_class.min())
@@ -432,11 +433,16 @@ def run_pipeline(
                     # Prepare & load this data to numpy from source.tif
                     signs, label, template = prepare_and_load_data(signs, label, 
                                                                 out=processed_out.joinpath(tile),
-                                                                cache=cache_out,
+                                                                cache=cache_out, resize_img=230,
                                                                 verbose=verbose)
                     X, y = create_dataset(signs, label, sign_per_class=5000, method=method, verbose=verbose)
                     m, report_train = train_model(X, y, verbose, return_report=True)
-                    X, y, label = None, None, None
+
+                    # TEST: проверка, работает ли метод с загрублением.
+                    signs, label, template = prepare_and_load_data(signs, label, 
+                                                                out=processed_out.joinpath(tile),
+                                                                cache=cache_out, resize_img=10,
+                                                                verbose=verbose)
                     tile_map = create_map(m, signs, save_out, template=template, chunk=chunk, verbose=verbose)
                     signs = None
                     gc.collect()
@@ -479,7 +485,7 @@ def run_pipeline(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="CLI for running the pipeline of creating a map from MODIS to Sentinel-2."
+        description="CLI for running the pipeline of creating a map from MODIS data"
     )
 
     # Required / main args

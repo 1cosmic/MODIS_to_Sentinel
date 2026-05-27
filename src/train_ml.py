@@ -67,7 +67,7 @@ def train_model(data, labels, model='RF', save=True, verbose=True):
     return m, classification_report(y_test, y_pred), confusion_matrix(y_test, y_pred), f1
 
 
-def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, verbose=False, force=False):
+def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, verbose=False, skip_train=False, force=False):
     """
     datasets: dict with keys as param names and values as lists of possible values.
     Example:
@@ -91,7 +91,7 @@ def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, 
         lm = params['layer_mode']
         lt = params['layer_type']
         rr = params['r']
-        pp = params['percent']
+        cs = params['count_signs']
         rz = params['resize']
         st = params['stratify']
         hp = params['homogen_percent']
@@ -106,13 +106,16 @@ def analyse_best_model(config_grid, signs_path, labels_path, store_models=True, 
             layer_mode=lm,
             layer_type=lt,
             r=rr,
-            count=pp,
-            resize=rz,
+            count=cs,
+            resize_img=rz,
             stratify=st,
-            feature=hp,
+            feature_percent=hp,
             verbose=verbose,
             force=force)
         _, count_classes = np.unique(z_y, return_counts=True)
+
+        if skip_train:
+            return results
 
         # Train model and measure time
         start_time = time.time()

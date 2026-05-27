@@ -27,17 +27,22 @@ def plot_confusion(matrix):
     plt.xlabel("Predicted")
     plt.ylabel("True")
     for (i, j), z in np.ndenumerate(matrix):
-        if z > 0.3:
-            plt.text(
-                j,
-                i,
-                f"{z:.2f}",
-                ha="center",
-                va="center",
-                color="white",
-                fontsize=10,
-                fontweight="bold",
-            )
+        if z > 0.5:
+            c = 'white'
+            f = 'bold'
+        else:
+            c = 'black'
+            f = 'normal'
+        plt.text(
+            j,
+            i,
+            f"{z:.2f}",
+            ha="center",
+            va="center",
+            color=c,
+            fontsize=10,
+            fontweight=f,
+        )
     plt.clim(0, 1)
     plt.colorbar()
     # plt.show()

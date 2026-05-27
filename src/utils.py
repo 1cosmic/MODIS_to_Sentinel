@@ -45,9 +45,13 @@ DEFAULT_PATH = {
 }
 
 
-def parse_tifs_from(path:str, typeof:str, force=False, verbose=True):
+def parse_tifs_from(path:str, typeof:str, force=False, verbose=True, cache_csv=None):
 
-    out = DEFAULT_PATH['processing'] + f'path2tif_{typeof}.csv'
+    if cache_csv is not None:
+        out = DEFAULT_PATH['processing'] + cache_csv
+    else:
+        out = DEFAULT_PATH['processing'] + f'path2tif_{typeof}.csv'
+
     if os.path.exists(out) and not force:
         if verbose:
             print(f"Load '{typeof}' from cached DataFrame to path: ", out)
@@ -254,6 +258,7 @@ def load_tif(data: str,  only_first=False, verbose=True):
         if not data_files:
             raise ValueError(f"No data files found in path: {data}")
 
+    shape = None
     for tif in data_files:
         if verbose:
             print(f"Loading file: {tif}")
@@ -266,9 +271,10 @@ def load_tif(data: str,  only_first=False, verbose=True):
             "transform": src.GetGeoTransform(),
             "projection": src.GetProjection(),
         })
+        shape = results[-1]['array'].shape
         src = None  # clear memory
     if verbose:
-        print("Files was loaded.")
+        print(f"Files was loaded with shape: {shape}")
 
     if only_first:
         return results[0]
