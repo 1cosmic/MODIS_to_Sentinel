@@ -1,4 +1,4 @@
-# M2S
+# MODIS to Sentinel
 
 Research prototype for generating 10 m land-cover maps from Sentinel-2 imagery using MODIS-derived low-resolution labels 230 m.
 
